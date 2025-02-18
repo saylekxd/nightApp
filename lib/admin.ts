@@ -53,7 +53,7 @@ export async function checkAdminStatus(): Promise<boolean> {
   return data.is_admin || false;
 }
 
-export async function validateQRCode(code: string): Promise<QRValidationResult> {
+export async function validateQRCode(code: string, activity_name: string): Promise<QRValidationResult> {
   try {
     // Check admin status first
     const isAdmin = await checkAdminStatus();
@@ -62,7 +62,10 @@ export async function validateQRCode(code: string): Promise<QRValidationResult> 
     }
 
     const { data, error } = await supabase
-      .rpc('validate_qr_code', { p_code: code });
+      .rpc('validate_qr_code', { 
+        p_code: code,
+        p_activity_name: activity_name 
+      });
 
     if (error) throw error;
     return data as QRValidationResult;
@@ -74,17 +77,18 @@ export async function validateQRCode(code: string): Promise<QRValidationResult> 
   }
 }
 
-export async function acceptVisit(code: string) {
-  // Check admin status first
-  const isAdmin = await checkAdminStatus();
-  if (!isAdmin) {
-    throw new Error('Unauthorized: Admin access required');
+export async function acceptVisit(code: string, activity_name: string): Promise<void> {
+  try {
+    const { error } = await supabase
+      .rpc('accept_visit', { 
+        p_code: code,
+        p_activity_name: activity_name 
+      });
+
+    if (error) throw error;
+  } catch (error) {
+    throw new Error(error instanceof Error ? error.message : 'Failed to accept visit');
   }
-
-  const { error } = await supabase
-    .rpc('accept_visit', { p_code: code });
-
-  if (error) throw error;
 }
 
 export async function acceptReward(code: string) {

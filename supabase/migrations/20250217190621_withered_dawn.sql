@@ -17,6 +17,14 @@ FOREIGN KEY (user_id)
 REFERENCES profiles(id)
 ON DELETE CASCADE;
 
+-- Add points field to qr_codes
+ALTER TABLE qr_codes
+ADD COLUMN IF NOT EXISTS points INTEGER NOT NULL DEFAULT 0;
+
+-- Add metadata field to qr_codes
+ALTER TABLE qr_codes
+ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb;
+
 -- Fix reward_redemptions foreign key
 ALTER TABLE reward_redemptions
 DROP CONSTRAINT IF EXISTS reward_redemptions_user_id_fkey,
@@ -25,21 +33,59 @@ FOREIGN KEY (user_id)
 REFERENCES profiles(id)
 ON DELETE CASCADE;
 
--- Update validateQRCode function to use correct join syntax
-CREATE OR REPLACE FUNCTION validate_qr_code(p_code text)
+-- Create activities table
+CREATE TABLE IF NOT EXISTS activities (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL UNIQUE,
+  points integer NOT NULL,
+  description text,
+  is_active boolean DEFAULT true,
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now()
+);
+
+-- Insert default activities
+INSERT INTO activities (name, points, description) VALUES
+  ('Entry', 200, 'Points for entering the venue'),
+  ('Drink Purchase', 100, 'Points for purchasing a drink')
+ON CONFLICT (name) DO UPDATE
+SET points = EXCLUDED.points,
+    description = EXCLUDED.description;
+
+-- Update validateQRCode function to only validate the QR code existence
+CREATE OR REPLACE FUNCTION validate_qr_code(p_code text, p_activity_name text)
 RETURNS json
 LANGUAGE plpgsql
 SECURITY DEFINER
 AS $$
 DECLARE
   v_result json;
+  v_activity activities%ROWTYPE;
 BEGIN
-  -- First check visit QR code
+  -- Get activity details
+  SELECT * INTO v_activity
+  FROM activities
+  WHERE name = p_activity_name
+    AND is_active = true;
+
+  IF NOT FOUND THEN
+    RETURN json_build_object(
+      'valid', false,
+      'error', 'Invalid activity type'
+    );
+  END IF;
+
+  -- Check visit QR code
   SELECT json_build_object(
     'valid', true,
     'data', json_build_object(
       'type', 'visit',
       'code', qr.code,
+      'activity', json_build_object(
+        'name', v_activity.name,
+        'points', v_activity.points,
+        'description', v_activity.description
+      ),
       'user', json_build_object(
         'id', p.id,
         'full_name', p.full_name,
@@ -52,36 +98,6 @@ BEGIN
   WHERE qr.code = p_code
     AND qr.is_active = true
     AND qr.expires_at > now();
-
-  IF v_result IS NOT NULL THEN
-    RETURN v_result;
-  END IF;
-
-  -- Then check reward redemption
-  SELECT json_build_object(
-    'valid', true,
-    'data', json_build_object(
-      'type', 'reward',
-      'code', rr.code,
-      'expires_at', rr.expires_at,
-      'reward', json_build_object(
-        'id', r.id,
-        'title', r.title,
-        'points_required', r.points_required
-      ),
-      'user', json_build_object(
-        'id', p.id,
-        'full_name', p.full_name,
-        'points', p.points
-      )
-    )
-  ) INTO v_result
-  FROM reward_redemptions rr
-  JOIN rewards r ON r.id = rr.reward_id
-  JOIN profiles p ON p.id = rr.user_id
-  WHERE rr.code = p_code
-    AND rr.status = 'active'
-    AND rr.expires_at > now();
 
   IF v_result IS NOT NULL THEN
     RETURN v_result;

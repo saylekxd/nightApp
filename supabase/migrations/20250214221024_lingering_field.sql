@@ -13,7 +13,7 @@
 */
 
 -- Function to accept a visit QR code
-CREATE OR REPLACE FUNCTION accept_visit(p_code text)
+CREATE OR REPLACE FUNCTION accept_visit(p_code text, p_activity_name text)
 RETURNS void
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -21,7 +21,18 @@ AS $$
 DECLARE
   v_user_id uuid;
   v_visit_id uuid;
+  v_activity activities%ROWTYPE;
 BEGIN
+  -- Get activity details
+  SELECT * INTO v_activity
+  FROM activities
+  WHERE name = p_activity_name
+    AND is_active = true;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Invalid activity type';
+  END IF;
+
   -- Get user ID from QR code and validate
   SELECT user_id INTO v_user_id
   FROM qr_codes
@@ -36,10 +47,30 @@ BEGIN
   -- Create visit and award points
   SELECT id INTO v_visit_id FROM create_visit(v_user_id);
 
-  -- Deactivate the QR code
-  UPDATE qr_codes
-  SET is_active = false
-  WHERE code = p_code;
+  -- Award points to the user
+  UPDATE profiles
+  SET points = points + v_activity.points
+  WHERE id = v_user_id;
+
+  -- Create transaction record
+  INSERT INTO transactions (
+    user_id,
+    amount,
+    type,
+    description,
+    metadata
+  ) VALUES (
+    v_user_id,
+    v_activity.points,
+    'earn',
+    'Points earned from ' || v_activity.name,
+    jsonb_build_object(
+      'qr_code', p_code,
+      'visit_id', v_visit_id,
+      'activity_name', v_activity.name,
+      'activity_id', v_activity.id
+    )
+  );
 END;
 $$;
 

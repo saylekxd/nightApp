@@ -3,13 +3,21 @@ import { View, Text, StyleSheet, Pressable, Platform } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { validateQRCode, acceptVisit, acceptReward, QRValidationResult } from '@/lib/admin';
+import { validateQRCode, acceptVisit, QRValidationResult } from '@/lib/admin';
 import { useCameraPermissions } from 'expo-camera';
 import WebScanner from './scanner/components/WebScanner';
 import CameraScanner from './scanner/components/CameraScanner';
 import ScanResult from './scanner/components/ScanResult';
+import ActivitySelector from './scanner/components/ActivitySelector';
 import ErrorView from './scanner/components/ErrorView';
 import PermissionDenied from './scanner/components/PermissionDenied';
+
+interface Activity {
+  id: string;
+  name: string;
+  points: number;
+  description: string;
+}
 
 const ScanScreen = () => {
   const router = useRouter();
@@ -20,6 +28,9 @@ const ScanScreen = () => {
   const [accepting, setAccepting] = useState(false);
   const [isInitializing, setIsInitializing] = useState(true);
   const [webScanner, setWebScanner] = useState<any>(null);
+  const [selectedActivity, setSelectedActivity] = useState<Activity | null>(null);
+  const [showActivitySelector, setShowActivitySelector] = useState(false);
+  const [scannedCode, setScannedCode] = useState<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -69,16 +80,22 @@ const ScanScreen = () => {
     try {
       setScanned(true);
       setError(null);
-      const validationResult = await validateQRCode(data);
-      setResult(validationResult);
+      setScannedCode(data);
+      setShowActivitySelector(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to validate QR code');
+      setScanned(false);
+    }
+  };
 
-      if (Platform.OS === 'web' && webScanner) {
-        try {
-          await webScanner.pause();
-        } catch (err) {
-          console.error('Error pausing scanner:', err);
-        }
-      }
+  const handleActivitySelect = async (activity: Activity) => {
+    if (!scannedCode) return;
+
+    try {
+      setShowActivitySelector(false);
+      const validationResult = await validateQRCode(scannedCode, activity.name);
+      setResult(validationResult);
+      setSelectedActivity(activity);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to validate QR code');
       setScanned(false);
@@ -86,17 +103,13 @@ const ScanScreen = () => {
   };
 
   const handleAccept = async () => {
-    if (!result?.valid || !result.data) return;
+    if (!result?.valid || !result.data || !selectedActivity) return;
 
     try {
       setAccepting(true);
       setError(null);
 
-      if (result.data.type === 'visit') {
-        await acceptVisit(result.data.code);
-      } else {
-        await acceptReward(result.data.code);
-      }
+      await acceptVisit(result.data.code, selectedActivity.name);
 
       setTimeout(() => {
         router.back();
@@ -121,6 +134,8 @@ const ScanScreen = () => {
     setScanned(false);
     setError(null);
     setResult(null);
+    setSelectedActivity(null);
+    setScannedCode(null);
     
     if (Platform.OS === 'web' && webScanner) {
       webScanner.resume().catch(console.error);
@@ -189,12 +204,25 @@ const ScanScreen = () => {
         />
       )}
 
+      {showActivitySelector && (
+        <ActivitySelector
+          onSelect={handleActivitySelect}
+          onCancel={() => {
+            setShowActivitySelector(false);
+            setScanned(false);
+            setScannedCode(null);
+          }}
+        />
+      )}
+
       {result && (
         <ScanResult
           result={result}
           accepting={accepting}
+          selectedActivity={selectedActivity ?? undefined}
           onAccept={handleAccept}
           onRetry={handleRetry}
+          onSelectActivity={() => setShowActivitySelector(true)}
         />
       )}
     </View>
@@ -212,25 +240,23 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     padding: 20,
-    paddingTop: 40,
+    paddingTop: 60,
   },
   closeButton: {
     padding: 8,
   },
   title: {
+    color: '#fff',
     fontSize: 20,
     fontWeight: 'bold',
-    color: '#fff',
-    marginLeft: 15,
+    marginLeft: 12,
+  },
+  scannerContainer: {
+    flex: 1,
   },
   text: {
     color: '#fff',
     fontSize: 16,
     textAlign: 'center',
-    margin: 20,
-  },
-  scannerContainer: {
-    flex: 1,
-    position: 'relative',
   },
 });
